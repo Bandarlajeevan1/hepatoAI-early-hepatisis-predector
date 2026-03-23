@@ -2,6 +2,7 @@
 Input validation for patient data and API requests.
 """
 from typing import Dict, Tuple, List, Any
+import pandas as pd
 from utils.constants import (
     HEPATITIS_FEATURES,
     ILPD_FEATURES,
@@ -32,21 +33,32 @@ class PatientDataValidator:
         if not data:
             return False, ERROR_MISSING_FIELDS
 
+        # Normalize keys to lowercase for comparison
+        data_keys_lower = {k.lower() for k in data.keys()}
+        
         # Check for required fields (at least hepatitis core features)
         # Allow flexible feature sets (either hepatitis or ILPD)
         required_fields = set(HEPATITIS_FEATURES) | set(ILPD_FEATURES)
-        provided_fields = set(data.keys())
-
-        # At least 10 features should be provided
-        if len(provided_fields) < 10:
-            return False, f"Provide at least 10 features. Got {len(provided_fields)}"
+        
+        # Require minimal essential fields: age and sex
+        if 'age' not in data_keys_lower or 'sex' not in data_keys_lower:
+            return False, "Required fields missing: age and sex must be provided"
 
         # Validate data types and ranges
         for field, value in data.items():
+            # Skip NaN values (will be imputed)
+            try:
+                if pd.isna(value):
+                    continue
+            except (TypeError, NameError):
+                pass  # pd not available or value type doesn't support isna
+            
+            field_lower = field.lower()
+            
             # Check if value is numeric (int/float) or categorical string
             if isinstance(value, str):
                 # Allow categorical values
-                if field in CATEGORICAL_FEATURES:
+                if field_lower in CATEGORICAL_FEATURES:
                     if value.lower() not in ["yes", "no", "male", "female", "1", "0"]:
                         return (
                             False,
@@ -56,8 +68,8 @@ class PatientDataValidator:
                     return False, f"Field {field} should be numeric, got string: {value}"
             elif isinstance(value, (int, float)):
                 # Validate numeric ranges if defined
-                if field in FEATURE_RANGES:
-                    min_val, max_val = FEATURE_RANGES[field]
+                if field_lower in FEATURE_RANGES:
+                    min_val, max_val = FEATURE_RANGES[field_lower]
                     if not (min_val <= value <= max_val):
                         return (
                             False,

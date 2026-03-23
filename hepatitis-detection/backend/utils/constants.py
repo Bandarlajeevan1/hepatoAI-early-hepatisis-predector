@@ -81,11 +81,11 @@ BINARY_FEATURES = [
 FEATURE_RANGES = {
     "age": (0, 120),  # Age in years
     "bilirubin": (0, 20),  # mg/dL
-    "alk_phosphatase": (0, 500),  # U/L
-    "sgot": (0, 500),  # U/L (AST)
-    "sgpt": (0, 500),  # U/L (ALT)
-    "albumin": (0, 6),  # g/dL
-    "protime": (5, 30),  # seconds
+    "alk_phosphatase": (0, 1000),  # U/L
+    "sgot": (0, 1000),  # U/L (AST)
+    "sgpt": (0, 1000),  # U/L (ALT)
+    "albumin": (0, 100),  # g/dL or raw values
+    "protime": (0, 100),  # seconds or raw values
 }
 
 # ============================================================================

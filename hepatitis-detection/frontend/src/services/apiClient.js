@@ -46,16 +46,24 @@ const ApiService = {
    * Get health status of the API
    */
   getHealth: async () => {
-    const response = await apiClient.get('/health');
-    return response.data;
+    try {
+      const response = await apiClient.get('/health');
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: error.response?.data?.error || 'Health check failed', status: error.response?.status || 500 };
+    }
   },
 
   /**
    * Get API information
    */
   getInfo: async () => {
-    const response = await apiClient.get('/info');
-    return response.data;
+    try {
+      const response = await apiClient.get('/info');
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: error.response?.data?.error || 'Failed to get info', status: error.response?.status || 500 };
+    }
   },
 
   /**

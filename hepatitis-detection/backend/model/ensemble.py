@@ -45,16 +45,39 @@ class MSEMEnsemble:
         return self
 
     def predict_proba(self, X):
-        # Apply feature selector if available
-        if self.selector is not None:
+        # Handle missing values - fill NaN with column medians or 0
+        if np.any(np.isnan(X)):
+            X = np.copy(X)
+            col_medians = np.nanmedian(X, axis=0)
+            # For all-NaN columns, use value 0
+            col_medians = np.nan_to_num(col_medians, nan=0.0)
+            inds = np.where(np.isnan(X))
+            X[inds] = np.take(col_medians, inds[1])
+        
+        # Handle feature mismatch - if selector expects fewer features, drop last column(s)
+        if self.selector is not None and hasattr(self.selector, 'n_features_in_'):
+            if X.shape[1] > self.selector.n_features_in_:
+                X = X[:, :self.selector.n_features_in_]
             X = self.selector.transform(X)
+        
         Xs = self.scaler.transform(X)
         meta_features = np.column_stack([clf.predict_proba(Xs)[:, 1] for clf in self.fitted_bases.values()])
-        meta_proba = self.meta.predict_proba(meta_features)[:, 1]
+        meta_proba_pos = self.meta.predict_proba(meta_features)[:, 1]
+        # Return two-column probabilities [negative, positive] for compatibility
+        meta_proba = np.column_stack([1.0 - meta_proba_pos, meta_proba_pos])
         return meta_proba
 
     def predict(self, X, threshold=0.5):
-        return (self.predict_proba(X) >= threshold).astype(int)
+        probs = self.predict_proba(X)
+        # Determine positive-class probabilities robustly
+        if getattr(probs, 'ndim', None) == 1:
+            prob_pos = np.array(probs).ravel()
+        elif probs.shape[1] > 1:
+            prob_pos = probs[:, 1]
+        else:
+            prob_pos = probs[:, 0]
+
+        return (prob_pos >= threshold).astype(int)
 
     def save(self, path):
         joblib.dump({

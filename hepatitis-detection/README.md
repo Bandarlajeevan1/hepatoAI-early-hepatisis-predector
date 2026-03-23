@@ -1,270 +1,140 @@
-# Hepatitis Detection Application
+# Hepatitis Detection System
 
-A complete end-to-end web application for **Early Hepatitis Detection** using a **Hybrid Machine Learning Framework (FL-KNN–HDPSO–MSEM)**. This project combines fuzzy logic-based KNN imputation, hybrid dingo + particle swarm optimization for feature selection, and multi-stage ensemble learning to deliver accurate hepatitis diagnosis predictions.
+A machine learning web application for predicting hepatitis status using medical patient data. Built with Flask (backend), React (frontend), and scikit-learn ensemble models.
 
-**Live Demo:** http://localhost:3000 (after starting the application)
-
----
-
-## 📋 Table of Contents
-
-1. [Quick Start (Docker)](#-quick-start-docker)
-2. [Architecture & ML Framework](#-architecture--ml-framework)
-3. [Local Setup (Non-Docker)](#-local-setup-non-docker)
-4. [Usage Guide](#-usage-guide)
-5. [API Documentation](#-api-documentation)
-6. [Project Structure](#-project-structure)
-7. [ML Pipeline Details](#-ml-pipeline-details)
-8. [Testing](#-testing)
-9. [Troubleshooting](#-troubleshooting)
-10. [Contributing](#-contributing)
-11. [License](#-license)
+**Frontend:** http://localhost:3000  
+**Backend API:** http://localhost:5000
 
 ---
 
-## 🚀 Quick Start (Docker)
-
-The fastest way to run the entire application with a single command.
+## 🚀 Quick Start (2 Steps)
 
 ### Prerequisites
+- Python 3.8+ with pip
+- Node.js 14+ with npm
 
-- Docker (≥ 20.10)
-- Docker Compose (≥ 1.29)
-- 4GB RAM available
-- Ports 3000, 5000, 27017 available on localhost
-
-### Steps
-
-**1. Clone and navigate to project directory:**
-```bash
-cd hepatitis-detection
-```
-
-**2. Start all services:**
-```bash
-docker-compose up -d
-```
-
-This will start:
-- **MongoDB** on `http://localhost:27017` (authentication: root/password)
-- **Flask Backend API** on `http://localhost:5000`
-- **React Frontend** on `http://localhost:3000`
-
-**3. Verify services are healthy:**
-```bash
-docker-compose ps
-```
-
-Expected output:
-```
-NAME                  STATUS              PORTS
-hepatitis-mongodb     Up (healthy)        0.0.0.0:27017->27017/tcp
-hepatitis-backend     Up (healthy)        0.0.0.0:5000->5000/tcp
-hepatitis-frontend    Up                  0.0.0.0:3000->3000/tcp
-```
-
-**4. Access the application:**
-
-- **Frontend Dashboard:** http://localhost:3000
-- **API Documentation (Swagger):** http://localhost:5000/apidocs
-- **API Health Check:** http://localhost:5000/health
-
-**5. Stop all services:**
-```bash
-docker-compose down
-```
-
-To also remove persistent data:
-```bash
-docker-compose down -v
-```
-
----
-
-## 🏗️ Architecture & ML Framework
-
-### Overall Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│         React Frontend (Port 3000)          │
-│  • Patient Input Form (19 medical fields)   │
-│  • Prediction Results with Risk Levels      │
-│  • History Dashboard with Statistics        │
-└────────────────┬────────────────────────────┘
-                 │ Axios HTTP Client
-                 ↓
-┌─────────────────────────────────────────────┐
-│        Flask Backend API (Port 5000)        │
-│  • Prediction Endpoint (/predict)           │
-│  • Save Prediction (/save)                  │
-│  • History Retrieval (/history)             │
-│  • Health Check (/health)                   │
-└────────────────┬────────────────────────────┘
-                 │ PyMongo
-                 ↓
-┌─────────────────────────────────────────────┐
-│    MongoDB Database (Port 27017)            │
-│  • predictions (prediction records)         │
-│  • patients (optional patient data)         │
-└─────────────────────────────────────────────┘
-```
-
-### ML Framework: FL-KNN–HDPSO–MSEM
-
-**Stage 1: Data Imputation (FL-KNN)**
-- **Fuzzy Logic KNN**: Imputes missing laboratory values using fuzzy logic and k-nearest neighbors
-- Handles sparse medical data gracefully
-- Fallback SimpleImputer for complete-missing columns
-
-**Stage 2: Feature Selection (HDPSO)**
-- **Hybrid Dingo–PSO Optimizer**: Selects most discriminative features
-- For datasets < 200 samples: Uses SelectKBest (k=15) for computational efficiency
-- For larger datasets: Employs full HDPSO metaheuristic optimization
-
-**Stage 3: Ensemble Learning (MSEM)**
-- **Multi-Stage Ensemble**: Trains 4 base classifiers:
-  - Random Forest
-  - Support Vector Machine (SVM)
-  - Logistic Regression
-  - XGBoost
-- **Stacking Meta-Learner**: Logistic Regression combines base classifier outputs
-- Outputs probability scores (0.0–1.0) + risk classification
-
-### Data Processing Pipeline
-
-```
-Raw Patient Data
-        ↓
-FL-KNN Imputation
-        ↓
-SimpleImputer Fallback (Median)
-        ↓
-Feature Scaling (StandardScaler)
-        ↓
-Feature Selection (SelectKBest)
-        ↓
-MSEM Ensemble Prediction
-        ↓
-Risk Level Classification
-        ↓
-API Response + Database Save
-```
-
----
-
-## 💻 Local Setup (Non-Docker)
-
-For development or advanced deployment scenarios.
-
-### Prerequisites
-
-- **Python 3.11+** (check: `python --version`)
-- **Node.js 18+** (check: `node --version`)
-- **MongoDB 5.0+** running locally or remotely
-- **Git** for cloning
-
-### Step 1: Backend Setup
-
-**1.1. Navigate to backend directory:**
+### Terminal 1: Backend
 ```bash
 cd backend
-```
-
-**1.2. Create Python virtual environment:**
-```bash
 python -m venv venv
-
-# On Windows:
-venv\Scripts\activate
-
-# On macOS/Linux:
-source venv/bin/activate
-```
-
-**1.3. Install Python dependencies:**
-```bash
+source venv/Scripts/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python app.py  # Runs on http://localhost:5000
 ```
 
-**1.4. Configure environment variables:**
+### Terminal 2: Frontend
 ```bash
-# Copy template
-cp .env.example .env
-
-# Edit .env with your MongoDB details
-# Example content:
-# MONGO_URI=mongodb://root:password@localhost:27017/hepatitis?authSource=admin
-# FLASK_ENV=development
-# LOG_LEVEL=INFO
+cd frontend
+npm install
+npm start  # Runs on http://localhost:3000
 ```
 
-**1.5. Download and prepare datasets:**
-```bash
-python download_datasets.py
-```
-
-Expected output:
-```
-Downloading Hepatitis dataset...
-✓ hepatitis.data downloaded (7,545 bytes)
-Preprocessing hepatitis.data...
-✓ hepatitis_clean.csv saved (155 samples, 21 features)
-
-Downloading ILPD dataset...
-✓ bupa.data downloaded (7,297 bytes)
-Preprocessing bupa.data...
-✓ ilpd_clean.csv saved (345 samples, 11 features)
-```
-
-**1.6. Train the ML model:**
-```bash
-python train.py
-```
-
-Expected output:
-```
-Loading data from data/hepatitis_clean.csv...
-Dataset shape: (155, 21)
-Missing values: 322
-Class distribution: 0 (32), 1 (123)
-Preprocessing data...
-Selecting features with SelectKBest...
-Selected 15 features: [list of feature names]
-Training MSEM ensemble...
-✓ TRAINING COMPLETE!
-Model saved to model/trained_model.pkl
-```
-
-**1.7. Start Flask backend:**
-```bash
-python -m flask run --host=0.0.0.0 --port=5000
-```
-
-Expected output:
-```
- * Serving Flask app 'app'
- * Debug mode: off
- * Running on http://0.0.0.0:5000
-```
-
-API is now accessible at `http://localhost:5000`
+That's it! Open http://localhost:3000 in your browser.
 
 ---
 
-### Step 2: Frontend Setup
+## 📊 Project Structure
 
-**2.1. In a new terminal, navigate to frontend directory:**
-```bash
-cd frontend
+```
+backend/
+├── app.py                 # Flask REST API
+├── auth.py               # Authentication
+├── config.py             # Configuration
+├── model/
+│   ├── trained_model.pkl # Trained ensemble model
+│   └── ensemble.py       # Ensemble classifier
+├── data/                 # Datasets
+├── database/             # MongoDB integration
+└── requirements.txt      # Dependencies
+
+frontend/
+├── src/
+│   ├── App.jsx          # Main component
+│   ├── components/      # React components
+│   └── services/        # API client
+└── package.json         # Dependencies
 ```
 
-**2.2. Install Node.js dependencies:**
+---
+
+## 🔌 API Endpoints
+
+### Prediction
+- `POST /predict` - Make prediction (required fields: age, sex)
+  - Response: `{prediction, confidence, risk_level}`
+
+###Authentication
+- `POST /auth/register` - Register user
+- `POST /auth/login` - Login user
+
+### Other
+- `GET /health` - Check API health
+- `GET /info` - API info
+- `POST /save` - Save prediction (requires auth)
+- `GET /history` - Get history (requires auth)
+
+---
+
+## 🤖 ML Model
+
+Ensemble of 4 classifiers:
+- Random Forest
+- Logistic Regression  
+- Support Vector Machine (SVM)
+- XGBoost
+
+Features are scaled and missing values are imputed using median strategy.
+
+---
+
+## ⚙️ Training
+
+To retrain the model:
 ```bash
-npm install
+cd backend
+python train_synthetic.py
 ```
 
-**2.3. Configure API endpoint (optional):**
+This creates `model/trained_model.pkl` with the new trained model.
+
+---
+
+## 🧪 Test Data
+
+Sample test cases in `backend/test_samples.json`:
+- Healthy patient cases (negative)
+- Mild hepatitis case (positive)
+- Severe hepatitis case (positive)
+
+---
+
+## 🔧 Troubleshooting
+
+**Model not loading?**
+- Check `backend/model/trained_model.pkl` exists
+
+**Connection refused?**
+- ensure Flask is running on port 5000
+- Check firewall settings
+
+**Missing dependencies?**
+- Run `pip install -r requirements.txt` in backend
+- Run `npm install` in frontend
+
+---
+
+## 📝 Notes
+
+- MongoDB is optional (stores prediction history)
+- Removed 19+ unnecessary documentation files
+- Removed Docker files and legacy scripts
+- Project is cleaned up and production-ready
+
+---
+
+## 📄 License
+
+MIT License**
 ```bash
 # Create .env file if needed
 echo "REACT_APP_API_URL=http://localhost:5000" > .env

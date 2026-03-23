@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import './PatientInputForm.css';
 
-const PatientInputForm = ({ onSubmit, loading }) => {
+const PatientInputForm = ({ onSubmit, loading, modelReady = true }) => {
   const [formData, setFormData] = useState({
     age: '',
     sex: '',
@@ -20,6 +20,7 @@ const PatientInputForm = ({ onSubmit, loading }) => {
     spider_web: '',
     ascites: '',
     varices: '',
+    histology: '',
     bilirubin: '',
     alk_phosphatase: '',
     sgot: '',
@@ -49,15 +50,15 @@ const PatientInputForm = ({ onSubmit, loading }) => {
     const newErrors = {};
 
     // Required fields
-    if (!formData.age || parseFloat(formData.age) < 0 || parseFloat(formData.age) > 120) {
-      newErrors.age = 'Age must be between 0 and 120';
+    if (!formData.age || parseFloat(formData.age) < 0 || parseFloat(formData.age) > 100) {
+      newErrors.age = 'Age must be between 0 and 100';
     }
     if (!formData.sex) {
       newErrors.sex = 'Sex is required';
     }
 
     // Numeric fields validation
-    const numericFields = ['bilirubin', 'alk_phosphatase', 'sgot', 'sgpt', 'albumin', 'protime'];
+    const numericFields = ['bilirubin', 'alk_phosphatase', 'sgot', 'sgpt', 'albumin', 'protime']; // histology handled separately
     numericFields.forEach((field) => {
       if (formData[field] && parseFloat(formData[field]) < 0) {
         newErrors[field] = 'Value cannot be negative';
@@ -81,7 +82,7 @@ const PatientInputForm = ({ onSubmit, loading }) => {
     Object.keys(formData).forEach((key) => {
       if (formData[key] === '') {
         processedData[key] = null;
-      } else if (['age', 'sex', 'steroid', 'antivirals', 'fatigue', 'malaise', 'anorexia', 'liver_big', 'liver_firm', 'spleen_palpable', 'spider_web', 'ascites', 'varices'].includes(key)) {
+      } else if (['age', 'sex', 'steroid', 'antivirals', 'fatigue', 'malaise', 'anorexia', 'liver_big', 'liver_firm', 'spleen_palpable', 'spider_web', 'ascites', 'varices', 'histology'].includes(key)) {
         processedData[key] = parseInt(formData[key], 10) || null;
       } else {
         processedData[key] = parseFloat(formData[key]) || null;
@@ -130,9 +131,9 @@ const PatientInputForm = ({ onSubmit, loading }) => {
               name="age"
               value={formData.age}
               onChange={handleChange}
-              placeholder="Enter age (0-120)"
+              placeholder="Enter age (0-100)"
               min="0"
-              max="120"
+              max="100"
               required
             />
             {errors.age && <span className="error">{errors.age}</span>}
@@ -141,10 +142,11 @@ const PatientInputForm = ({ onSubmit, loading }) => {
           <div className="form-group">
             <label htmlFor="sex">Sex *</label>
             <select id="sex" name="sex" value={formData.sex} onChange={handleChange} required>
-              <option value="">Select sex</option>
+              <option value=""></option>
               <option value="1">Male</option>
               <option value="2">Female</option>
             </select>
+            <small className="select-hint">Please select one option</small>
             {errors.sex && <span className="error">{errors.sex}</span>}
           </div>
         </div>
@@ -155,29 +157,32 @@ const PatientInputForm = ({ onSubmit, loading }) => {
             <div className="form-group">
               <label htmlFor="fatigue">Fatigue</label>
               <select id="fatigue" name="fatigue" value={formData.fatigue} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Mild</option>
                 <option value="2">Severe</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="malaise">Malaise</label>
               <select id="malaise" name="malaise" value={formData.malaise} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="anorexia">Anorexia</label>
               <select id="anorexia" name="anorexia" value={formData.anorexia} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
           </div>
         </div>
@@ -188,28 +193,31 @@ const PatientInputForm = ({ onSubmit, loading }) => {
             <div className="form-group">
               <label htmlFor="liver_big">Liver Enlargement</label>
               <select id="liver_big" name="liver_big" value={formData.liver_big} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="liver_firm">Liver Firmness</label>
               <select id="liver_firm" name="liver_firm" value={formData.liver_firm} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">Normal</option>
                 <option value="1">Firm</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="spleen_palpable">Spleen Palpable</label>
               <select id="spleen_palpable" name="spleen_palpable" value={formData.spleen_palpable} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
           </div>
 
@@ -217,28 +225,41 @@ const PatientInputForm = ({ onSubmit, loading }) => {
             <div className="form-group">
               <label htmlFor="spider_web">Spider Web Veins</label>
               <select id="spider_web" name="spider_web" value={formData.spider_web} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="ascites">Ascites</label>
               <select id="ascites" name="ascites" value={formData.ascites} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="varices">Esophageal Varices</label>
               <select id="varices" name="varices" value={formData.varices} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
               </select>
+              <small className="select-hint">Please select one option</small>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="histology">Histology (biopsy)</label>
+              <select id="histology" name="histology" value={formData.histology} onChange={handleChange}>
+                <option value=""></option>
+                <option value="0">Not available/Normal</option>
+                <option value="1">Abnormal</option>
+              </select>
+              <small className="select-hint">Please select one option</small>
             </div>
           </div>
         </div>
@@ -249,21 +270,23 @@ const PatientInputForm = ({ onSubmit, loading }) => {
             <div className="form-group">
               <label htmlFor="steroid">Steroid Usage</label>
               <select id="steroid" name="steroid" value={formData.steroid} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
                 <option value="2">Previous</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
 
             <div className="form-group">
               <label htmlFor="antivirals">Antiviral Treatment</label>
               <select id="antivirals" name="antivirals" value={formData.antivirals} onChange={handleChange}>
-                <option value="">Select</option>
+                <option value=""></option>
                 <option value="0">No</option>
                 <option value="1">Yes</option>
                 <option value="2">Previous</option>
               </select>
+              <small className="select-hint">Please select one option</small>
             </div>
           </div>
         </div>
@@ -366,14 +389,25 @@ const PatientInputForm = ({ onSubmit, loading }) => {
         </div>
 
         <div className="form-actions">
-          <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? 'Analyzing...' : 'Get Prediction'}
-          </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={loading || !modelReady}
+                title={!modelReady ? 'Model not trained. Run backend/train.py and restart the server.' : ''}
+              >
+                {loading ? 'Analyzing...' : 'Get Prediction'}
+              </button>
           <button type="button" className="btn btn-secondary" onClick={resetForm} disabled={loading}>
             Clear Form
           </button>
         </div>
       </form>
+      {!modelReady && (
+        <div className="model-warning" style={{marginTop: '12px', color: '#b91c1c'}}>
+          ⚠ Model not available: please train the ML model on the backend.
+          Run: <strong>python backend/train.py</strong> and restart the API server.
+        </div>
+      )}
     </div>
   );
 };

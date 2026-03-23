@@ -182,7 +182,11 @@ function App() {
         {/* Prediction Tab */}
         {activeTab === 'predict' && (
           <div className="tab-content">
-            <PatientInputForm onSubmit={handlePredictionSubmit} loading={loading} />
+            <PatientInputForm
+              onSubmit={handlePredictionSubmit}
+              loading={loading}
+              modelReady={apiHealth?.model_loaded}
+            />
             {predictionResult && (
               <PredictionResult
                 prediction={predictionResult}

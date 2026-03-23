@@ -15,6 +15,7 @@ from flasgger import Swagger
 from datetime import datetime
 import numpy as np
 import pandas as pd
+import joblib
 
 from config import config
 from model.fl_knn import FLKNNImputer
@@ -38,22 +39,28 @@ logger = setup_logger(__name__)
 # Model artifacts
 MODEL_PATH = os.path.join(os.path.dirname(__file__), config.MODEL_PATH)
 model = None
-scaler = None
+model_bundle = None
 
 # Load model at startup
 def load_model():
-    """Load trained MSEM ensemble model."""
-    global model
+    """Load trained ensemble model (can be either MSEM or improved bundle format)."""
+    global model, model_bundle
     if os.path.exists(MODEL_PATH):
         try:
-            model = MSEMEnsemble.load(MODEL_PATH)
-            logger.info(f"✓ Loaded trained model from {MODEL_PATH}")
+            loaded = joblib.load(MODEL_PATH)
+            # Check if it's a new bundle format or old MSEM format
+            if isinstance(loaded, dict) and 'meta' in loaded:
+                model_bundle = loaded
+                logger.info(f"✓ Loaded improved ensemble model from {MODEL_PATH}")
+            else:
+                model = loaded
+                logger.info(f"✓ Loaded trained model from {MODEL_PATH}")
             return True
         except Exception as e:
             logger.error(f"Failed loading model: {e}")
             return False
     else:
-        logger.warning(f"Model not found at {MODEL_PATH}. Run 'python train.py' first.")
+        logger.warning(f"Model not found at {MODEL_PATH}. Run 'python train_improved.py' first.")
         return False
 
 
@@ -98,7 +105,86 @@ def preprocess_patient_data(patient_data: dict) -> tuple:
         # Sanitize input
         sanitized_data = PatientDataValidator.sanitize_input(patient_data)
         
-        # If model provides feature names and imputer, build full feature vector
+        # Normalize keys to lowercase for matching
+        normalized_data = {k.lower(): v for k, v in sanitized_data.items()}
+        
+        # Check if we're using bundle model
+        if model_bundle is not None:
+            # Get feature names from the bundle model
+            stored_features = model_bundle.get('feature_names')
+            if stored_features is not None:
+                # Convert pandas Index to list if needed
+                if hasattr(stored_features, 'tolist'):
+                    all_features = stored_features.tolist()
+                else:
+                    all_features = list(stored_features)
+            else:
+                # Fallback feature list (19 total features from ILPD dataset)
+                all_features = ['albumin', 'alk_phosphatase', 'anorexia', 'antivirals', 'ascites',
+                               'bilirubin', 'class', 'fatigue', 'histology', 'liver_big', 'liver_firm', 
+                               'malaise', 'protime', 'sex', 'sgot', 'sgpt', 'spider_web', 'spleen_palpable', 
+                               'steroid']
+            
+            # 'class' is the target variable, not an input feature
+            # The scaler was fit on 18 features (all except 'class')
+            exclude_from_scaler = {'class'}
+            scaler_features = [f for f in all_features if f not in exclude_from_scaler]
+            
+            # Create feature vector with all features in correct order
+            row = {fn: np.nan for fn in all_features}
+            # Fill with provided values
+            for k, v in normalized_data.items():
+                if k in row:
+                    row[k] = v
+            
+            # Create DataFrame with all features in the same order
+            df_full = pd.DataFrame([row], columns=all_features)
+            # Convert to numeric
+            df_full = df_full.apply(pd.to_numeric, errors='coerce')
+            
+            # Extract only the features for scaler (exclude 'class' which is the target)
+            df_scaler = df_full[scaler_features]
+            X_scaler = df_scaler.to_numpy()
+            
+            # Apply scaler from bundle
+            scaler = model_bundle.get('scaler')
+            if scaler is not None:
+                try:
+                    X_scaled = scaler.transform(X_scaler)
+                except Exception as e:
+                    logger.warning(f"Scaler transform failed: {e}, using imputer fallback")
+                    # Try using the imputer instead
+                    imputer = model_bundle.get('imputer')
+                    if imputer is not None:
+                        try:
+                            X_scaled = imputer.transform(X_scaler)
+                        except Exception:
+                            # Last resort fallback: fill NaN with column medians
+                            X_scaled = np.nan_to_num(X_scaler, nan=np.nanmedian(X_scaler, axis=0))
+                    else:
+                        # Last resort fallback: fill NaN with column medians
+                        X_scaled = np.nan_to_num(X_scaler, nan=np.nanmedian(X_scaler, axis=0))
+            else:
+                X_scaled = X_scaler
+            
+            # additionally ensure no NaNs remain
+            if np.isnan(X_scaled).any():
+                imputer = model_bundle.get('imputer')
+                if imputer is not None:
+                    try:
+                        X_scaled = imputer.transform(X_scaled)
+                    except Exception:
+                        col_medians = np.nanmedian(X_scaled, axis=0)
+                        inds = np.where(np.isnan(X_scaled))
+                        X_scaled[inds] = np.take(col_medians, inds[1])
+                else:
+                    col_medians = np.nanmedian(X_scaled, axis=0)
+                    inds = np.where(np.isnan(X_scaled))
+                    X_scaled[inds] = np.take(col_medians, inds[1])
+            
+            return X_scaled, True, "Preprocessing successful"
+        
+        # Fallback for old model format
         if model is not None and getattr(model, 'feature_names', None):
           feature_names = model.feature_names
           # Create a row with all feature names initialized to NaN
@@ -122,12 +208,25 @@ def preprocess_patient_data(patient_data: dict) -> tuple:
           else:
             X_imputed = np.nan_to_num(X_full, nan=np.nanmedian(X_full, axis=0))
 
+          # If a selector was used during training, apply it (or its support_ mask)
+          sel = getattr(model, 'selector', None)
+          if sel is not None:
+            try:
+              # Prefer transform if available
+              X_sel = sel.transform(X_imputed)
+              X_imputed = X_sel
+            except Exception:
+              if hasattr(sel, 'support_'):
+                mask = np.asarray(getattr(sel, 'support_'))
+                if mask.shape[0] == X_imputed.shape[1]:
+                  X_imputed = X_imputed[:, mask]
+
           return X_imputed, True, "Preprocessing successful"
 
         # Fallback: Convert to DataFrame and use numeric columns provided by input
         df = pd.DataFrame([sanitized_data])
-        # Extract numeric features
-        X_numeric = df.select_dtypes(include=[np.number]).to_numpy()
+        # Extract numeric features, excluding 'class'
+        X_numeric = df.select_dtypes(include=[np.number]).drop(columns=['class'], errors='ignore').to_numpy()
         if X_numeric.shape[1] == 0:
           return None, False, "No numeric features found in input"
         # Handle NaN values with simple median imputation
@@ -145,7 +244,7 @@ def predict_patient(patient_data: dict) -> tuple:
     Returns:
         (predictions_array, probabilities_array, risk_level_str)
     """
-    if model is None:
+    if model is None and model_bundle is None:
         raise RuntimeError(ERROR_MISSING_MODEL)
 
     X, is_valid, msg = preprocess_patient_data(patient_data)
@@ -158,42 +257,75 @@ def predict_patient(patient_data: dict) -> tuple:
     if X.shape[0] != 1:
         X = X.reshape(1, -1)
 
-    # If selector expects a different number of input features, try to recover
-    selector = getattr(model, 'selector', None)
-    if selector is not None and hasattr(selector, 'n_features_in_'):
-        expected = selector.n_features_in_
-        if X.shape[1] != expected:
-            # Attempt to re-run imputer (if available) on a full-feature row
-            imp = getattr(model, 'imputer', None)
-            if imp is not None:
-                try:
-                    # attempt to build a full row from feature_names if available
-                    fn = getattr(model, 'feature_names', None)
-                    if fn is not None and len(fn) == X.shape[1]:
-                        X_full = X
-                    else:
-                        # pad or trim to match selector input
-                        if X.shape[1] > expected:
-                            X = X[:, :expected]
-                        else:
-                            # pad with medians
-                            pad = np.nanmedian(X, axis=0)
-                            pad = np.resize(pad, expected)
-                            X = np.concatenate([X, pad.reshape(1, -1)[:, X.shape[1]:]], axis=1)
-                except Exception:
-                    pass
-
-    # Run prediction
-    predictions = model.predict(X)
-    probabilities = model.predict_proba(X)
+    # Use new bundle format if available
+    if model_bundle is not None:
+        try:
+            # Scale using stored scaler
+            scaler = model_bundle.get('scaler')
+            if scaler:
+                X = scaler.transform(X)
+            
+            # Impute any remaining NaNs after scaling (important for LR models)
+            if np.isnan(X).any():
+                imputer = model_bundle.get('imputer')
+                if imputer is not None:
+                    try:
+                        X = imputer.transform(X)
+                    except Exception:
+                        # fallback to column medians
+                        col_medians = np.nanmedian(X, axis=0)
+                        inds = np.where(np.isnan(X))
+                        X[inds] = np.take(col_medians, inds[1])
+                else:
+                    col_medians = np.nanmedian(X, axis=0)
+                    inds = np.where(np.isnan(X))
+                    X[inds] = np.take(col_medians, inds[1])
+            
+            # Get predictions from base models
+            rf = model_bundle.get('rf')
+            lr = model_bundle.get('lr')
+            svm = model_bundle.get('svm')
+            xgb_clf = model_bundle.get('xgb')
+            meta = model_bundle.get('meta')
+            meta_scaler = model_bundle.get('meta_scaler')
+            
+            # Get base predictions
+            meta_features = np.column_stack([
+                rf.predict_proba(X)[:, 1],
+                lr.predict_proba(X)[:, 1],
+                svm.predict_proba(X)[:, 1],
+                xgb_clf.predict_proba(X)[:, 1]
+            ])
+            
+            # Scale meta features
+            meta_features = meta_scaler.transform(meta_features)
+            
+            # Get ensemble prediction
+            probabilities = meta.predict_proba(meta_features)
+            predictions = meta.predict(meta_features)
+            
+        except Exception as e:
+            logger.error(f"Prediction error with bundle model: {e}")
+            raise
+    else:
+        # Fallback to old MSEM model format
+        probabilities = model.predict_proba(X)
+        predictions = model.predict(X)
 
     # Determine probability for positive class
-    if getattr(probabilities, 'ndim', None) == 1:
-        prob_positive = float(probabilities[0])
-    elif probabilities.shape[1] > 1:
-        prob_positive = float(probabilities[0, 1])
+    if isinstance(probabilities, np.ndarray):
+        if probabilities.ndim == 1:
+            prob_positive = float(probabilities[0])
+        elif probabilities.shape[1] > 1:
+            prob_positive = float(probabilities[0, 1])
+        else:
+            prob_positive = float(probabilities[0, 0])
     else:
-        prob_positive = float(probabilities[0, 0])
+        prob_positive = float(probabilities)
+
+    # Derive predicted class from positive probability (threshold 0.5)
+    pred_value = 1 if prob_positive >= 0.5 else 0
+    predictions = np.array([int(pred_value)])
 
     risk_level = get_risk_level(prob_positive)
 
@@ -234,9 +366,9 @@ def register():
         description: Registration failed
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
-            return jsonify({'success': False, 'message': 'Invalid JSON'}), 400
+          return jsonify({'success': False, 'message': 'Invalid JSON'}), 400
         
         email = data.get('email', '').strip()
         password = data.get('password', '')
@@ -294,9 +426,9 @@ def login():
         description: Login failed
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
-            return jsonify({'success': False, 'message': 'Invalid JSON'}), 400
+          return jsonify({'success': False, 'message': 'Invalid JSON'}), 400
         
         email = data.get('email', '').strip()
         password = data.get('password', '')
@@ -373,15 +505,15 @@ def predict():
       500:
         description: Server error or model not loaded
     """
-    if model is None:
+    if model is None and model_bundle is None:
         logger.error("Model not loaded")
         return ResponseValidator.format_error_response(ERROR_MISSING_MODEL, 500)
     
     try:
         # Get JSON payload
-        payload = request.get_json()
+        payload = request.get_json(silent=True)
         if payload is None:
-            return ResponseValidator.format_error_response("Invalid JSON content", 400)
+          return ResponseValidator.format_error_response("Invalid JSON content", 400)
         # Use helper to preprocess and predict
         try:
             predictions, probabilities, risk_level = predict_patient(payload)
@@ -416,6 +548,7 @@ def save():
         required: true
         schema:
           type: object
+      
           properties:
             patient_id:
               type: string
@@ -436,9 +569,9 @@ def save():
         description: Database error
     """
     try:
-        payload = request.get_json()
+        payload = request.get_json(silent=True)
         if payload is None:
-            return ResponseValidator.format_error_response("Invalid JSON content", 400)
+          return ResponseValidator.format_error_response("Invalid JSON content", 400)
         
         # Add metadata
         record = payload.copy()
@@ -517,8 +650,8 @@ def health():
         description: Service is healthy
     """
     status = {
-        "status": "healthy" if model is not None else "degraded",
-        "model_loaded": model is not None,
+        "status": "healthy" if (model is not None or model_bundle is not None) else "degraded",
+        "model_loaded": model is not None or model_bundle is not None,
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0"
     }
