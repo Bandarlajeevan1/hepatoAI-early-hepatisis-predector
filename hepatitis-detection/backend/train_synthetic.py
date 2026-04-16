@@ -251,22 +251,14 @@ class SyntheticDataTrainer:
         
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         
-        # Save model and scaler together
-        model_package = {
-            'model': self.model,
-            'scaler': self.scaler,
-            'feature_names': list(self.X.columns),
-            'metrics': self.metrics
-        }
+        # Save just the model object (compatible with app.py)
+        # The app.py expects a fitted sklearn model with predict_proba method
+        joblib.dump(self.model, MODEL_PATH)
         
-        joblib.dump(model_package, MODEL_PATH)
-        
-        print(f"\n✓ Model package saved")
+        print(f"\n✓ Model saved")
         print(f"  Location: {MODEL_PATH}")
-        print(f"  Contains: Model + Scaler + Feature names + Metrics")
-        print(f"\n✓ Features ({len(model_package['feature_names'])}):")
-        for i, name in enumerate(model_package['feature_names'], 1):
-            print(f"  {i:2d}. {name}")
+        print(f"  Type: Scikit-learn VotingClassifier")
+        print(f"  Metrics: Accuracy={self.metrics['accuracy']:.2%}, AUC-ROC={self.metrics['auc_roc']:.4f}")
         
         print("\n" + "="*70)
         return self

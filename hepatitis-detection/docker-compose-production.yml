@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # Backend Flask Service
+  backend:
+    image: YOUR_DOCKER_HUB_USERNAME/hepatitis-detection-backend:latest
+    container_name: hepatitis-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_APP=app.py
+      - MONGO_URI=mongodb+srv://jeevanbandarla1234_db_user:Jeevan12@cluster0.eg83ljt.mongodb.net/
+    depends_on:
+      - mongo
+    networks:
+      - hepatitis-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend React Service
+  frontend:
+    image: YOUR_DOCKER_HUB_USERNAME/hepatitis-detection-frontend:latest
+    container_name: hepatitis-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000
+    networks:
+      - hepatitis-network
+    restart: unless-stopped
+
+  # MongoDB Service
+  mongo:
+    image: mongo:6.0
+    container_name: hepatitis-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=hepatitis_db
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - hepatitis-network
+    restart: unless-stopped
+
+networks:
+  hepatitis-network:
+    driver: bridge
+
+volumes:
+  mongo_data:

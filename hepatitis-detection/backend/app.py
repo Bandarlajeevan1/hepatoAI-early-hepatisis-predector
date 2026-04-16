@@ -22,6 +22,7 @@ from model.fl_knn import FLKNNImputer
 from model.ensemble import MSEMEnsemble
 from database import mongo
 from auth import AuthService, token_required
+from sklearn.linear_model import LogisticRegression
 from utils.logger import setup_logger
 from utils.validators import PatientDataValidator, ResponseValidator
 from utils.constants import RISK_LOW, RISK_MEDIUM, RISK_HIGH, ERROR_MISSING_MODEL
@@ -42,6 +43,29 @@ model = None
 model_bundle = None
 
 # Load model at startup
+def _patch_logistic_regression(clf):
+    """Ensure compatibility for old sklearn LogisticRegression model objects."""
+    if isinstance(clf, LogisticRegression) and not hasattr(clf, "multi_class"):
+        clf.multi_class = "ovr"
+        logger.info("✓ Patched LogisticRegression.multi_class for compatibility")
+
+
+def _patch_bundle_logistic_objects(bundle):
+    if not isinstance(bundle, dict):
+        return
+    lr = bundle.get("lr")
+    if lr is not None:
+        _patch_logistic_regression(lr)
+    meta = bundle.get("meta")
+    if meta is not None:
+        if hasattr(meta, "estimator"):
+            _patch_logistic_regression(meta.estimator)
+        if hasattr(meta, "calibrated_classifiers_"):
+            for clf in getattr(meta, "calibrated_classifiers_", []):
+                if hasattr(clf, "estimator"):
+                    _patch_logistic_regression(clf.estimator)
+
+
 def load_model():
     """Load trained ensemble model (can be either MSEM or improved bundle format)."""
     global model, model_bundle
@@ -51,9 +75,11 @@ def load_model():
             # Check if it's a new bundle format or old MSEM format
             if isinstance(loaded, dict) and 'meta' in loaded:
                 model_bundle = loaded
+                _patch_bundle_logistic_objects(model_bundle)
                 logger.info(f"✓ Loaded improved ensemble model from {MODEL_PATH}")
             else:
                 model = loaded
+                _patch_logistic_regression(model)
                 logger.info(f"✓ Loaded trained model from {MODEL_PATH}")
             return True
         except Exception as e:
@@ -86,9 +112,49 @@ def get_risk_level(probability: float) -> str:
         return RISK_HIGH
 
 
+def _impute_nan_values(X: np.ndarray, strategy: str = 'median') -> np.ndarray:
+    """
+    Robust NaN imputation with multiple fallback strategies.
+    
+    Args:
+        X: Input array potentially containing NaNs
+        strategy: Imputation strategy ('median', 'mean', 'zero')
+    
+    Returns:
+        Array with no NaN values
+    """
+    if not np.isnan(X).any():
+        return X
+    
+    X = X.copy()
+    
+    if strategy == 'median':
+        # Use column medians, defaulting to 0 for all-NaN columns
+        col_medians = np.nanmedian(X, axis=0)
+        col_medians = np.where(np.isnan(col_medians), 0, col_medians)
+        inds = np.where(np.isnan(X))
+        X[inds] = col_medians[inds[1]]
+    elif strategy == 'mean':
+        # Use column means, defaulting to 0 for all-NaN columns
+        col_means = np.nanmean(X, axis=0)
+        col_means = np.where(np.isnan(col_means), 0, col_means)
+        inds = np.where(np.isnan(X))
+        X[inds] = col_means[inds[1]]
+    else:  # 'zero'
+        X = np.nan_to_num(X, nan=0.0)
+    
+    # Verify no NaNs remain
+    if np.isnan(X).any():
+        logger.warning("NaN values persisted after imputation, using zero fill")
+        X = np.nan_to_num(X, nan=0.0)
+    
+    return X
+
+
 def preprocess_patient_data(patient_data: dict) -> tuple:
     """
     Preprocess patient input data for model prediction.
+    Ensures ALL NaN values are handled BEFORE scaling or model prediction.
     
     Args:
         patient_data: Dictionary of patient features
@@ -108,8 +174,11 @@ def preprocess_patient_data(patient_data: dict) -> tuple:
         # Normalize keys to lowercase for matching
         normalized_data = {k.lower(): v for k, v in sanitized_data.items()}
         
+        logger.debug(f"Normalized input data: {normalized_data}")
+        
         # Check if we're using bundle model
         if model_bundle is not None:
+            logger.debug("Using bundle model format")
             # Get feature names from the bundle model
             stored_features = model_bundle.get('feature_names')
             if stored_features is not None:
@@ -118,17 +187,20 @@ def preprocess_patient_data(patient_data: dict) -> tuple:
                     all_features = stored_features.tolist()
                 else:
                     all_features = list(stored_features)
+                logger.debug(f"Loaded feature names from bundle: {all_features}")
             else:
                 # Fallback feature list (19 total features from ILPD dataset)
                 all_features = ['albumin', 'alk_phosphatase', 'anorexia', 'antivirals', 'ascites',
                                'bilirubin', 'class', 'fatigue', 'histology', 'liver_big', 'liver_firm', 
                                'malaise', 'protime', 'sex', 'sgot', 'sgpt', 'spider_web', 'spleen_palpable', 
                                'steroid']
+                logger.debug(f"Using fallback features: {all_features}")
             
             # 'class' is the target variable, not an input feature
             # The scaler was fit on 18 features (all except 'class')
             exclude_from_scaler = {'class'}
             scaler_features = [f for f in all_features if f not in exclude_from_scaler]
+            logger.debug(f"Scaler features (excluding 'class'): {scaler_features} - Count: {len(scaler_features)}")
             
             # Create feature vector with all features in correct order
             row = {fn: np.nan for fn in all_features}
@@ -146,101 +218,92 @@ def preprocess_patient_data(patient_data: dict) -> tuple:
             df_scaler = df_full[scaler_features]
             X_scaler = df_scaler.to_numpy()
             
-            # Apply scaler from bundle
+            logger.debug(f"Before imputation - X shape: {X_scaler.shape}, NaN count: {np.isnan(X_scaler).sum()}")
+            
+            # ===== ABSOLUTE NaN elimination BEFORE scaling =====
+            # Step 1: Impute using median
+            X_imputed = _impute_nan_values(X_scaler, strategy='median')
+            
+            # Step 2: Final zero fill for any remaining NaNs
+            X_imputed = np.nan_to_num(X_imputed, nan=0.0, posinf=1e10, neginf=-1e10)
+            
+            logger.debug(f"After imputation - NaN count: {np.isnan(X_imputed).sum()}, Inf count: {np.isinf(X_imputed).sum()}")
+            # ===== END ABSOLUTE NaN elimination =====
+            
+            # Apply scaler from bundle (now works with GUARANTEED clean data)
             scaler = model_bundle.get('scaler')
             if scaler is not None:
                 try:
-                    X_scaled = scaler.transform(X_scaler)
+                    X_scaled = scaler.transform(X_imputed)
+                    logger.debug(f"After scaling - NaN count: {np.isnan(X_scaled).sum()}, Inf count: {np.isinf(X_scaled).sum()}")
+                    
+                    # Safety: Fill any NaNs/Infs that scaler might have produced
+                    X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=1e10, neginf=-1e10)
+                    logger.debug(f"After final fill - NaN count: {np.isnan(X_scaled).sum()}")
                 except Exception as e:
-                    logger.warning(f"Scaler transform failed: {e}, using imputer fallback")
-                    # Try using the imputer instead
-                    imputer = model_bundle.get('imputer')
-                    if imputer is not None:
-                        try:
-                            X_scaled = imputer.transform(X_scaler)
-                        except Exception:
-                            # Last resort fallback: fill NaN with column medians
-                            X_scaled = np.nan_to_num(X_scaler, nan=np.nanmedian(X_scaler, axis=0))
-                    else:
-                        # Last resort fallback: fill NaN with column medians
-                        X_scaled = np.nan_to_num(X_scaler, nan=np.nanmedian(X_scaler, axis=0))
+                    logger.warning(f"Scaler transform failed: {e}, using imputed data directly")
+                    X_scaled = X_imputed
             else:
-                X_scaled = X_scaler
-            
-            # additionally ensure no NaNs remain
-            if np.isnan(X_scaled).any():
-                imputer = model_bundle.get('imputer')
-                if imputer is not None:
-                    try:
-                        X_scaled = imputer.transform(X_scaled)
-                    except Exception:
-                        col_medians = np.nanmedian(X_scaled, axis=0)
-                        inds = np.where(np.isnan(X_scaled))
-                        X_scaled[inds] = np.take(col_medians, inds[1])
-                else:
-                    col_medians = np.nanmedian(X_scaled, axis=0)
-                    inds = np.where(np.isnan(X_scaled))
-                    X_scaled[inds] = np.take(col_medians, inds[1])
+                logger.warning("No scaler in bundle, using imputed data directly")
+                X_scaled = X_imputed
             
             return X_scaled, True, "Preprocessing successful"
         
         # Fallback for old model format
         if model is not None and getattr(model, 'feature_names', None):
-          feature_names = model.feature_names
-          # Create a row with all feature names initialized to NaN
-          row = {fn: np.nan for fn in feature_names}
-          # Fill with provided values
-          for k, v in sanitized_data.items():
-            if k in row:
-              row[k] = v
+            feature_names = model.feature_names
+            # Create a row with all feature names initialized to NaN
+            row = {fn: np.nan for fn in feature_names}
+            # Fill with provided values
+            for k, v in sanitized_data.items():
+                if k in row:
+                    row[k] = v
 
-          df_full = pd.DataFrame([row])
-          # Convert columns to numeric where possible
-          df_full = df_full.apply(pd.to_numeric, errors='coerce')
-          X_full = df_full.to_numpy()
+            df_full = pd.DataFrame([row])
+            # Convert columns to numeric where possible
+            df_full = df_full.apply(pd.to_numeric, errors='coerce')
+            X_full = df_full.to_numpy()
 
-          # Apply imputer if available
-          if getattr(model, 'imputer', None) is not None:
-            try:
-              X_imputed = model.imputer.transform(X_full)
-            except Exception:
-              X_imputed = np.nan_to_num(X_full, nan=np.nanmedian(X_full, axis=0))
-          else:
-            X_imputed = np.nan_to_num(X_full, nan=np.nanmedian(X_full, axis=0))
+            # CRITICAL: Impute NaNs FIRST (before any model sees the data)
+            X_imputed = _impute_nan_values(X_full, strategy='median')
 
-          # If a selector was used during training, apply it (or its support_ mask)
-          sel = getattr(model, 'selector', None)
-          if sel is not None:
-            try:
-              # Prefer transform if available
-              X_sel = sel.transform(X_imputed)
-              X_imputed = X_sel
-            except Exception:
-              if hasattr(sel, 'support_'):
-                mask = np.asarray(getattr(sel, 'support_'))
-                if mask.shape[0] == X_imputed.shape[1]:
-                  X_imputed = X_imputed[:, mask]
+            # If a selector was used during training, apply it (or its support_ mask)
+            sel = getattr(model, 'selector', None)
+            if sel is not None:
+                try:
+                    # Prefer transform if available
+                    X_sel = sel.transform(X_imputed)
+                    X_imputed = X_sel
+                except Exception:
+                    if hasattr(sel, 'support_'):
+                        mask = np.asarray(getattr(sel, 'support_'))
+                        if mask.shape[0] == X_imputed.shape[1]:
+                            X_imputed = X_imputed[:, mask]
 
-          return X_imputed, True, "Preprocessing successful"
+            return X_imputed, True, "Preprocessing successful"
 
         # Fallback: Convert to DataFrame and use numeric columns provided by input
         df = pd.DataFrame([sanitized_data])
         # Extract numeric features, excluding 'class'
         X_numeric = df.select_dtypes(include=[np.number]).drop(columns=['class'], errors='ignore').to_numpy()
         if X_numeric.shape[1] == 0:
-          return None, False, "No numeric features found in input"
-        # Handle NaN values with simple median imputation
-        X_numeric = np.nan_to_num(X_numeric, nan=np.nanmedian(X_numeric))
+            return None, False, "No numeric features found in input"
+        
+        # CRITICAL: Impute NaNs for sklearn models
+        X_numeric = _impute_nan_values(X_numeric, strategy='median')
+        
         return X_numeric, True, "Preprocessing successful"
     
     except Exception as e:
+        logger.error(f"Preprocessing error: {str(e)}")
         return None, False, f"Preprocessing error: {str(e)}"
 
 
 def predict_patient(patient_data: dict) -> tuple:
     """
     Preprocess input dict and run model prediction returning prediction and probabilities.
-
+    X is ALREADY SCALED and imputed from preprocess_patient_data.
+    
     Returns:
         (predictions_array, probabilities_array, risk_level_str)
     """
@@ -256,32 +319,21 @@ def predict_patient(patient_data: dict) -> tuple:
         X = X.reshape(1, -1)
     if X.shape[0] != 1:
         X = X.reshape(1, -1)
+    
+    # ===== CRITICAL: Multi-level NaN elimination =====
+    # Level 1: Check and impute
+    if np.isnan(X).any():
+        X = _impute_nan_values(X, strategy='median')
+    
+    # Level 2: Final zero fill for any remaining NaNs
+    X = np.nan_to_num(X, nan=0.0, posinf=1e10, neginf=-1e10)
+    
+    # ===== END CRITICAL =====
 
     # Use new bundle format if available
     if model_bundle is not None:
         try:
-            # Scale using stored scaler
-            scaler = model_bundle.get('scaler')
-            if scaler:
-                X = scaler.transform(X)
-            
-            # Impute any remaining NaNs after scaling (important for LR models)
-            if np.isnan(X).any():
-                imputer = model_bundle.get('imputer')
-                if imputer is not None:
-                    try:
-                        X = imputer.transform(X)
-                    except Exception:
-                        # fallback to column medians
-                        col_medians = np.nanmedian(X, axis=0)
-                        inds = np.where(np.isnan(X))
-                        X[inds] = np.take(col_medians, inds[1])
-                else:
-                    col_medians = np.nanmedian(X, axis=0)
-                    inds = np.where(np.isnan(X))
-                    X[inds] = np.take(col_medians, inds[1])
-            
-            # Get predictions from base models
+            # X is now guaranteed to have no NaNs, infs, or -infs
             rf = model_bundle.get('rf')
             lr = model_bundle.get('lr')
             svm = model_bundle.get('svm')
@@ -289,26 +341,40 @@ def predict_patient(patient_data: dict) -> tuple:
             meta = model_bundle.get('meta')
             meta_scaler = model_bundle.get('meta_scaler')
             
+            if not all([rf, lr, svm, xgb_clf, meta, meta_scaler]):
+                raise ValueError("Bundle model missing required components")
+            
             # Get base predictions
-            meta_features = np.column_stack([
-                rf.predict_proba(X)[:, 1],
-                lr.predict_proba(X)[:, 1],
-                svm.predict_proba(X)[:, 1],
-                xgb_clf.predict_proba(X)[:, 1]
-            ])
+            rf_proba = rf.predict_proba(X)[:, 1]
+            lr_proba = lr.predict_proba(X)[:, 1]
+            svm_proba = svm.predict_proba(X)[:, 1]
+            xgb_proba = xgb_clf.predict_proba(X)[:, 1]
+            
+            meta_features = np.column_stack([rf_proba, lr_proba, svm_proba, xgb_proba])
+            
+            # Impute any NaNs from model outputs
+            if np.isnan(meta_features).any():
+                meta_features = _impute_nan_values(meta_features, strategy='median')
+            meta_features = np.nan_to_num(meta_features, nan=0.0)
             
             # Scale meta features
-            meta_features = meta_scaler.transform(meta_features)
+            meta_features_scaled = meta_scaler.transform(meta_features)
+            
+            # Impute any NaNs after scaling
+            if np.isnan(meta_features_scaled).any():
+                meta_features_scaled = _impute_nan_values(meta_features_scaled, strategy='median')
+            meta_features_scaled = np.nan_to_num(meta_features_scaled, nan=0.0)
             
             # Get ensemble prediction
-            probabilities = meta.predict_proba(meta_features)
-            predictions = meta.predict(meta_features)
+            probabilities = meta.predict_proba(meta_features_scaled)
+            predictions = meta.predict(meta_features_scaled)
             
         except Exception as e:
             logger.error(f"Prediction error with bundle model: {e}")
             raise
     else:
         # Fallback to old MSEM model format
+        X = np.nan_to_num(X, nan=0.0)
         probabilities = model.predict_proba(X)
         predictions = model.predict(X)
 

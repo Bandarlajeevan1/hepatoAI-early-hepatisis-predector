@@ -9,7 +9,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/hepatitis_db")
+# Use Atlas URI from environment or fall back to local Docker Mongo if not provided
+MONGO_URI = os.environ.get(
+    "MONGO_URI",
+    "mongodb+srv://jeevanbandarla1234_db_user:Jeevan12@cluster0.eg83ljt.mongodb.net/"
+)
 
 
 def get_client(timeout=5000):
